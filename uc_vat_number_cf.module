@@ -41,8 +41,13 @@ function uc_vat_number_cf_form_alter(&$form, &$form_state, $form_id) {
   if ($form_id == 'uc_cart_checkout_form'){
     $form['#validate'][] = 'uc_vat_number_cf_checkout_validate';
   }
-  if ($form_id == 'uc_store_store_settings_form') {
-    $form['uc_store_vat_number'] = array(
+  if ($form_id == 'uc_store_settings_form') {
+    $form['fiscal'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Fiscal informations'),
+      '#group' => 'store',
+    );
+    $form['fiscal']['uc_store_vat_number'] = array(
       '#type' => 'textfield',
       '#title' => t('P.IVA del negozio'),
       '#description' => t('La Partita Iva del negozio.'),
@@ -50,9 +55,8 @@ function uc_vat_number_cf_form_alter(&$form, &$form_state, $form_id) {
       '#size' => 32,
       '#maxlength' => 13,
       '#required' => false,
-      '#weight' => -0.001,
     );
-    $form['uc_store_cf'] = array(
+    $form['fiscal']['uc_store_cf'] = array(
       '#type' => 'textfield',
       '#title' => t('Codice Fiscale'),
       '#description' => t('Il Codice Fiscale del negozio.'),
@@ -60,14 +64,13 @@ function uc_vat_number_cf_form_alter(&$form, &$form_state, $form_id) {
       '#size' => 32,
       '#maxlength' => 16,
       '#required' => false,
-      '#weight' => -0.000,
     );
   }
 
   if($form_id == 'uc_cart_checkout_form') {
-    $result = db_query("SELECT * FROM {uc_billing_extend} WHERE uid = %d AND uid != 0", $user->uid);
-    if ($row = db_fetch_object($result)) {
-      $billing_vat_number = $row->vat_number;
+    $result = db_query("SELECT * FROM {uc_billing_extend} WHERE uid = :uid AND uid != 0", array(':uid' => $user->uid));
+    if ($row = $result->fetchObject()) {
+      $billing_vat_number = $result->vat_number;
       $billing_cf = $row->cf;
     }
 
@@ -129,13 +132,13 @@ function _uc_vat_number_cf_billing_extend_exist_($order_id/*, $vat_number, $cf*/
   $query = "
     SELECT count(*) 
     FROM {uc_billing_extend} 
-    WHERE order_id = %d 
+    WHERE order_id = :order_id 
   ";
 /*      AND vat_number = '%s' 
       AND cf = '%s'
   ";*/
 
-  $result = db_result(db_query($query, $order_id/*, $vat_number, $cf*/));
+  $result = db_query($query, array(':order_id' => $order_id)/*, $vat_number, $cf*/)->fetchField();
 
   return ($result > 0 ? true : false);
 }
@@ -144,28 +147,32 @@ function uc_vat_number_cf_order($op, &$arg1, $arg2) {
   global $user;
   switch ($op) {
     case 'update':
-      // 
 
       // when the order is changing (the user begin a registered user), I update
       // the uid information on uc_billing_extend table
-//      echo $arg1->uid;
-      db_query("
-        UPDATE {uc_billing_extend} SET uid = %d"
-        ." WHERE order_id = %d", 
-        $arg1->uid, 
-        $arg1->order_id
-      );
+      db_update('uc_billing_extend') 
+        ->fields(array(
+          'uid' => $arg1->uid,
+        ))
+        ->condition('order_id', $arg1->order_id)
+        ->execute();
       break;
     case 'save':
       // Load up the existing data array.
-      $data = db_result(db_query("SELECT data FROM {uc_orders} WHERE order_id = %d", $arg1->order_id));
+      $data = db_query("SELECT data FROM {uc_orders} WHERE order_id = :order_id", array(':order_id' => $arg1->order_id))->fetchField();
       $data = unserialize($data);
 
       // Add the custom data into the data array
       $data['billing_vat_number'] = $_POST['panes']['billing']['billing_vat_number'];
       $data['billing_cf'] = $_POST['panes']['billing']['billing_cf'];
+
       // Save it again.
-      db_query("UPDATE {uc_orders} SET data = '%s' WHERE order_id = %d", serialize($data), $arg1->order_id);
+      db_update('uc_orders') 
+        ->fields(array(
+          'data' => serialize($data),
+        ))
+        ->condition('order_id', $arg1->order_id)
+        ->execute();
 
       if (arg(4) == 'edit') {
       }
@@ -174,40 +181,42 @@ function uc_vat_number_cf_order($op, &$arg1, $arg2) {
         if(_uc_vat_number_cf_billing_extend_exist_($arg1->order_id /*, $data['billing_vat_number'], $data['billing_cf']*/)){
           /*db_query("UPDATE {uc_billing_extend} SET vat_number = '%s', cf = '%s' "
           ."WHERE uid = %d", $arg1->billing_vat_number, $arg1->billing_cf, $user_id);*/
-          db_query("UPDATE {uc_billing_extend} SET
-            vat_number = '%s',
-            cf = '%s',
-            order_id = %d"
-            ." WHERE order_id = %d 
-            AND vat_number = '%s' 
-            AND cf = '%s'", 
-            $data['billing_vat_number'], 
-            $data['billing_cf'], 
-            $arg1->order_id,
-            $arg1->order_id,
-            $data['billing_vat_number'],
-            $data['billing_cf']);
+
+          db_update('uc_billing_extend') 
+            ->fields(array(
+              'vat_number' => $data['billing_vat_number'],
+              'cf' => $data['billing_cf'],
+              'order_id' => $arg1->order_id,
+            ))
+            ->condition('order_id', $arg1->order_id)
+            ->condition('vat_number', $data['billing_vat_number'])
+            ->condition('cf', $data['billing_cf'])
+            ->execute();
+
         }else{
-      #  if (db_affected_rows() == 0) {
-          db_query("INSERT INTO {uc_billing_extend}
-            (id, uid, order_id, vat_number, cf) "
-            ." VALUES ('', %d, %d, '%s', '%s')",
-            $arg1->uid,
-            $arg1->order_id,
-            $data['billing_vat_number'],
-            $data['billing_cf']);
+
+          db_insert('uc_billing_extend') 
+            ->fields(array(
+              'uid' => $arg1->uid,
+              'order_id' => $arg1->order_id,
+              'vat_number' => $data['billing_vat_number'],
+              'cf' => $data['billing_cf'],
+            ))
+            ->execute();
         }
       }
       break;
     case 'load':
-      $result = db_query("SELECT * FROM {uc_billing_extend} WHERE order_id = %d", $arg1->order_id);     
-      if ($data = db_fetch_object($result)) {       
+      $result = db_query("SELECT * FROM {uc_billing_extend} WHERE order_id = :order_id", array(':order_id' => $arg1->order_id));     
+      if ($data = $result->fetchObject()) {       
         $arg1->billing_vat_number = $data->vat_number;
         $arg1->billing_cf = $data->cf;
       }
       break;
     case 'delete':
-      db_query("DELETE FROM {uc_billing_extend} WHERE order_id = %d", $arg1->order_id);
+      db_delete('uc_billing_extend')
+        ->condition('order_id', $arg1->order_id)
+        ->execute();
       break;
   }
 }
@@ -425,19 +434,33 @@ function uc_order_pane_admin_vat_number($op, $arg1) {
 
     case 'edit-process':
       if (($arg1['admin_vat_number_field'] == '') && ($arg1['admin_cf_field'] == '')) {
-        db_query("DELETE FROM {uc_billing_extend} WHERE uid = %d", $arg1['uid']);
+
+        db_delete('uc_billing_extend')
+          ->condition('uid', $arg1['uid'])
+          ->execute();
+
       }else{
-        $num_rows = db_result(db_query('SELECT COUNT(id) FROM {uc_billing_extend} WHERE uid = %d', $arg1['uid']));
+
+        $num_rows = db_query('SELECT COUNT(*) FROM {uc_billing_extend} WHERE uid = :uid', array(':uid' => $arg1['uid']))->fetchField();
         if ($num_rows) {
-          db_query("UPDATE {uc_billing_extend} SET vat_number = '%s' WHERE uid = %d", $arg1['admin_vat_number_field'], $arg1['uid']);          
+
+          db_update('uc_billing_extend') 
+            ->fields(array(
+              'vat_number' => $arg1['admin_vat_number_field'],
+            ))
+            ->condition('uid', $arg1['uid'])
+            ->execute();
+
         }else{
-	  db_query("INSERT INTO {uc_billing_extend}
-	    (id, uid, order_id, vat_number, cf) "
-	    ." VALUES ('', %d, %d, '%s', '%s')",
-            $arg1['uid'],
-            $arg1['order_id'],
-            $arg1['admin_vat_number_field'],
-            $arg1['admin_cf_field']);          
+
+          db_insert('uc_billing_extend')
+            ->fields(array(
+              'uid' => $arg1['uid'],
+              'order_id' => $arg1['order_id'],
+              'vat_number' => $arg1['admin_vat_number_field'],
+              'cf' => $arg1['admin_cf_field']
+            ))
+            ->execute();
         }
       }
       return;
@@ -476,19 +499,30 @@ function uc_order_pane_admin_cf($op, $arg1) {
 
     case 'edit-process':
       if (($arg1['admin_vat_number_field'] == '') && ($arg1['admin_cf_field'] == '')) {
-        db_query("DELETE FROM {uc_billing_extend} WHERE uid = %d", $arg1['uid']);
+        db_delete('uc_billing_extend')
+          ->condition('uid', $arg1['uid'])
+          ->execute();
+        //db_query("DELETE FROM {uc_billing_extend} WHERE uid = %d", $arg1['uid']);
       }else{
-        $num_rows = db_result(db_query('SELECT COUNT(id) FROM {uc_billing_extend} WHERE uid = %d', $arg1['uid']));
+        $num_rows = db_query('SELECT COUNT(*) FROM {uc_billing_extend} WHERE uid = :uid', array(':uid' => $arg1['uid']))->fetchField();
         if ($num_rows) {
-          db_query("UPDATE {uc_billing_extend} SET cf = '%s' WHERE uid = %d", $arg1['admin_cf_field'], $arg1['uid']);          
+          //db_query("UPDATE {uc_billing_extend} SET cf = '%s' WHERE uid = %d", $arg1['admin_cf_field'], $arg1['uid']);   
+          db_update('uc_billing_extend') 
+            ->fields(array(
+              'cf' => $arg1['admin_cf_field'],
+            ))
+            ->condition('uid', $arg1['uid'])
+            ->execute();       
         }else{
-          db_query("INSERT INTO {uc_billing_extend}
-            (id, uid, order_id, vat_number, cf) "
-            ." VALUES ('', %d, %d, '%s', '%s')",
-            $arg1['uid'],
-            $arg1['order_id'],
-            $arg1['admin_vat_number_field'],
-            $arg1['admin_cf_field']);          
+
+          db_insert('uc_billing_extend') 
+            ->fields(array(
+              'uid' => $arg1['uid'],
+              'order_id' => $arg1['order_id'],
+              'vat_number' => $arg1['admin_vat_number_field'],
+              'cf' => $arg1['admin_cf_field'],
+            ))
+            ->execute();        
         }
       }
       return;
@@ -497,14 +531,14 @@ function uc_order_pane_admin_cf($op, $arg1) {
 
 function uc_vat_number_cf_settings_form() {
   $form['uc_vat_number_cf_vatnumber_checkout_message'] = array(
-    '#type' => 'textarea',
+    '#type' => 'textfield',
     '#title' => t('Descrizione da mostrare ai clienti quando sono alla cassa'),
     '#default_value' => variable_get('uc_vat_number_cf_vatnumber_checkout_message', 'Partita IVA (obbligatoria se sei un\'azienda).'),
     '#rows' => 10,
   );
 
   $form['uc_vat_number_cf_cf_checkout_message'] = array(
-    '#type' => 'textarea',
+    '#type' => 'textfield',
     '#title' => t('Descrizione da mostrare ai clienti quando sono alla cassa'),
     '#default_value' => variable_get('uc_vat_number_cf_cf_checkout_message', 'Codice Fiscale (obbligatorio se sei un\'azienda).'),
     '#rows' => 10,
